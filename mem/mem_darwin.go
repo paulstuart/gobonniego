@@ -1,8 +1,9 @@
 package mem
 
 import (
-	"github.com/cloudfoundry/gosigar"
 	"os/exec"
+
+	"github.com/cloudfoundry/gosigar"
 )
 
 func Get() (uint64, error) {

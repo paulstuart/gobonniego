@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/cunnie/gobonniego/bench"
-	"github.com/cunnie/gobonniego/mem"
 	"io/ioutil"
 	"log"
 	"math"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
+
+	"github.com/cunnie/gobonniego/bench"
+	"github.com/cunnie/gobonniego/mem"
 )
 
 func main() {
@@ -23,10 +25,11 @@ func main() {
 
 	bonnieParentDir, err := ioutil.TempDir("", "gobonniegoParent")
 	check(err)
-	defer os.RemoveAll(bonnieParentDir)
 
 	bm.PhysicalMemory, err = mem.Get()
 	check(err)
+
+	testSize := math.Floor(float64(2*int(bm.PhysicalMemory>>20))) / 1024
 
 	flag.BoolVar(&verbose, "v", false,
 		"Verbose. Will print to stderr diagnostic information such as the amount of RAM, number of cores, etc.")
@@ -40,7 +43,7 @@ func main() {
 		"The time (in seconds) to run the test")
 	flag.IntVar(&bm.NumReadersWriters, "threads", runtime.NumCPU(),
 		"The number of concurrent readers/writers, defaults to the number of CPU cores")
-	flag.Float64Var(&bm.AggregateTestFilesSizeInGiB, "size", math.Floor(float64(2*int(bm.PhysicalMemory>>20)))/1024,
+	flag.Float64Var(&bm.AggregateTestFilesSizeInGiB, "size", testSize,
 		"The amount of disk space to use (in GiB), defaults to twice the physical RAM")
 	flag.Float64Var(&bm.IODuration, "iops-duration", 15.0,
 		"The duration in seconds to run the IOPS benchmark, set to 0.5 for quick feedback during development")
@@ -51,6 +54,22 @@ func main() {
 	if version {
 		fmt.Printf("gobonniego version %s\n", bm.Version())
 		os.Exit(0)
+	}
+
+	defer os.RemoveAll(bonnieParentDir)
+
+	// in case the memory exceeds the filesystem free space ('cause it can and it has)
+	// maximum to use would be half the free space so we don't trash the filesystem
+	diskFree, err := DiskSpace(bonnieParentDir)
+	if err != nil {
+		log.Fatalf("unable to determine free disk space: %v", err)
+	}
+	diskFreeGiB := float64(diskFree >> 30)
+	half := diskFreeGiB / 2
+	if bm.AggregateTestFilesSizeInGiB > half {
+		const msg = "default size (%.3fGB) exceeds free diskspace (%.3fGB), adusting to half of latter (%.3fGB)"
+		log.Printf(msg, bm.AggregateTestFilesSizeInGiB, diskFreeGiB, half)
+		bm.AggregateTestFilesSizeInGiB = half
 	}
 
 	check(bm.SetBonnieDir(bonnieParentDir))
@@ -110,4 +129,12 @@ func check(e error) {
 	if e != nil {
 		panic(e)
 	}
+}
+
+func DiskSpace(dir string) (uint64, error) {
+	var buf syscall.Statfs_t
+	if err := syscall.Statfs(dir, &buf); err != nil {
+		return 0, fmt.Errorf("sys fail: %w", err)
+	}
+	return buf.Bavail * uint64(buf.Bsize), nil
 }
